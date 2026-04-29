@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Calendar,
   FileText, Eye, Award, AlertTriangle, Shield, Download,
-  LogOut, Bell, Building2, ListTree, ClipboardList,
+  LogOut, Bell, Building2, ListTree, ClipboardList, UserSquare,
 } from 'lucide-react';
 
 function NavItem({ to, icon: Icon, label, exact }) {
@@ -19,6 +19,7 @@ export default function Shell() {
   const { user, logout, can } = useAuth();
   const navigate = useNavigate();
   const initials = user?.full_name?.split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase() || '?';
+  const isTrainer = user?.role === 'trainer';
 
   return (
     <div className="app-shell">
@@ -39,37 +40,40 @@ export default function Shell() {
           <NavItem to="/" icon={LayoutDashboard} label="Dashboard" exact/>
 
           <div className="nav-section-label">Curriculum</div>
-          <NavItem to="/qualifications"    icon={Award}         label="Qualifications"/>
-          <NavItem to="/modules"           icon={ListTree}      label="Modules"/>
-          <NavItem to="/chronogram"        icon={Calendar}      label="Chronogram"/>
-          <NavItem to="/import"            icon={Download}      label="Excel Import"/>
+          <NavItem to="/qualifications" icon={Award}      label="Qualifications"/>
+          <NavItem to="/modules"        icon={ListTree}   label="Modules"/>
+          <NavItem to="/chronogram"     icon={Calendar}   label="Chronogram"/>
+          {can('school_admin','headmaster','dos','dod') &&
+            <NavItem to="/import"       icon={Download}   label="Excel Import"/>}
 
           <div className="nav-section-label">Pedagogy</div>
-          <NavItem to="/schemes"           icon={FileText}      label="Schemes of Work"/>
-          <NavItem to="/session-plans"     icon={BookOpen}      label="Session Plans"/>
-          <NavItem to="/observations"      icon={Eye}           label="Observations"/>
+          <NavItem to="/schemes"        icon={FileText}   label="Schemes of Work"/>
+          <NavItem to="/session-plans"  icon={BookOpen}   label="Session Plans"/>
+          <NavItem to="/observations"   icon={Eye}        label="Observations"/>
+          {/* Trainer portfolio — always visible to trainer, visible to supervisors too */}
+          <NavItem to="/trainer-portfolio" icon={UserSquare} label="My Portfolio"/>
 
           <div className="nav-section-label">Trainees</div>
-          <NavItem to="/portfolio"         icon={Award}         label="CBC Portfolios"/>
-          <NavItem to="/students"          icon={GraduationCap} label="Trainees"/>
-          <NavItem to="/classes"           icon={Building2}     label="Classes"/>
+          <NavItem to="/portfolio"      icon={Award}         label="CBC Portfolios"/>
+          <NavItem to="/students"       icon={GraduationCap} label="Trainees"/>
+          <NavItem to="/classes"        icon={Building2}     label="Classes"/>
 
           {can('school_admin','headmaster','dos','dod') && (
             <>
               <div className="nav-section-label">Staff</div>
-              <NavItem to="/users"         icon={Users}         label="Staff Members"/>
-              <NavItem to="/departments"   icon={Building2}     label="Departments"/>
+              <NavItem to="/users"       icon={Users}      label="Staff Members"/>
+              <NavItem to="/departments" icon={Building2}  label="Departments"/>
             </>
           )}
 
           <div className="nav-section-label">Discipline</div>
-          <NavItem to="/incidents"         icon={AlertTriangle} label="Incidents"/>
+          <NavItem to="/incidents"      icon={AlertTriangle} label="Incidents"/>
           {can('dod','headmaster','school_admin') &&
-            <NavItem to="/sanctions"       icon={Shield}        label="Sanctions"/>}
-          <NavItem to="/patron-reports"    icon={ClipboardList} label="Patron Reports"/>
+            <NavItem to="/sanctions"    icon={Shield}        label="Sanctions"/>}
+          <NavItem to="/patron-reports" icon={ClipboardList} label="Patron Reports"/>
 
           <div className="nav-section-label">System</div>
-          <NavItem to="/notifications"     icon={Bell}          label="Notifications"/>
+          <NavItem to="/notifications"  icon={Bell}          label="Notifications"/>
         </nav>
 
         <div className="sidebar-footer">

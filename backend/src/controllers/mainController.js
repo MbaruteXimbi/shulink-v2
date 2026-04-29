@@ -892,3 +892,98 @@ exports.markNotificationsRead = async (req, res) => {
     res.json({ message: 'All marked as read' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
+
+// ═══════════════════════════════════════════════════════════════
+// TRAINER PORTFOLIO
+// ═══════════════════════════════════════════════════════════════
+
+exports.getTrainerPortfolio = async (req, res) => {
+  const trainerId = req.params.trainer_id || req.user.id;
+  const s = sid(req);
+
+  // Only the trainer themselves or supervisors can view
+  if (req.user.id !== trainerId && !canSeeAll(req) && !isHod(req)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    // Trainer profile
+    const [[trainer]] = await pool.query(
+      `SELECT u.id, u.full_name, u.email, u.role, u.phone, u.created_at,
+              d.name AS department_name, s.name AS school_name
+       FROM users u
+       LEFT JOIN departments d ON u.department_id=d.id
+       LEFT JOIN schools s ON u.school_id=s.id
+       WHERE u.id=? AND u.school_id=?`,
+      [trainerId, s]
+    );
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+
+    // Schemes of work
+    const [schemes] = await pool.query(
+      `SELECT sw.*, m.code AS module_code, m.name AS module_name, c.name AS class_name,
+              (SELECT COUNT(*) FROM session_plans sp WHERE sp.scheme_id=sw.id) AS session_count
+       FROM schemes_of_work sw
+       LEFT JOIN modules m ON sw.module_id=m.id
+       LEFT JOIN classes c ON sw.class_id=c.id
+       WHERE sw.trainer_id=? AND sw.school_id=?
+       ORDER BY sw.created_at DESC`,
+      [trainerId, s]
+    );
+
+    // Session plans
+    const [session_plans] = await pool.query(
+      `SELECT sp.*, m.code AS module_code, c.name AS class_name,
+              lo.title AS lo_title, lo.number AS lo_number
+       FROM session_plans sp
+       LEFT JOIN schemes_of_work sw ON sp.scheme_id=sw.id
+       LEFT JOIN modules m ON sw.module_id=m.id
+       LEFT JOIN classes c ON sw.class_id=c.id
+       LEFT JOIN learning_outcomes lo ON sp.learning_outcome_id=lo.id
+       WHERE sp.trainer_id=? AND sp.school_id=?
+       ORDER BY sp.lesson_date DESC, sp.week_number DESC`,
+      [trainerId, s]
+    );
+
+    // Observations received
+    const [observations] = await pool.query(
+      `SELECT o.*, obs.full_name AS observer_name, c.name AS class_name, m.code AS module_code
+       FROM observations o
+       LEFT JOIN users obs ON o.observer_id=obs.id
+       LEFT JOIN classes c ON o.class_id=c.id
+       LEFT JOIN modules m ON o.module_id=m.id
+       WHERE o.trainer_id=? AND o.school_id=?
+       ORDER BY o.observation_date DESC`,
+      [trainerId, s]
+    );
+
+    // Competencies signed off by this trainer
+    const [competencies_signed] = await pool.query(
+      `SELECT tc.*, st.full_name AS student_name, st.reg_number,
+              m.code AS module_code, m.name AS module_name,
+              lo.title AS lo_title, lo.number AS lo_number
+       FROM trainee_competencies tc
+       JOIN students st ON tc.student_id=st.id
+       JOIN modules m ON tc.module_id=m.id
+       LEFT JOIN learning_outcomes lo ON tc.learning_outcome_id=lo.id
+       WHERE tc.trainer_id=? AND tc.school_id=? AND tc.signed_off_by=?
+       ORDER BY tc.signed_off_at DESC`,
+      [trainerId, s, trainerId]
+    );
+
+    // Stats summary
+    const stats = {
+      schemes_total:       schemes.length,
+      schemes_approved:    schemes.filter(s => s.status === 'approved').length,
+      session_plans_total: session_plans.length,
+      session_plans_submitted: session_plans.filter(p => p.status !== 'draft').length,
+      observations_total:  observations.length,
+      avg_observation_score: observations.length
+        ? (observations.reduce((a, o) => a + (o.overall_score || 0), 0) / observations.length).toFixed(1)
+        : null,
+      competencies_signed: competencies_signed.length,
+    };
+
+    res.json({ trainer, schemes, session_plans, observations, competencies_signed, stats });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};

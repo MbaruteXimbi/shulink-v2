@@ -124,6 +124,8 @@ r.post('/patron-reports/:id/submit',   roles('patron'), main_c.submitPatronRepor
 r.post('/patron-reports/:id/review',   roles('dod','headmaster','school_admin'), main_c.reviewPatronReport);
 
 // ── PORTFOLIO ─────────────────────────────────────────────────
+r.get ('/trainer-portfolio',           main_c.getTrainerPortfolio);
+r.get ('/trainer-portfolio/:trainer_id', main_c.getTrainerPortfolio);
 r.get ('/portfolio/:student_id',  main_c.getTraineePortfolio);
 r.post('/portfolio/sign-off',     main_c.signOffCompetency);
 r.post('/portfolio/evidence',     docUpload.single('file'), main_c.addEvidence);
