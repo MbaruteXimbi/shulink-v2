@@ -11,7 +11,7 @@ function SessionPlanModal({ plan, schemes, onClose, onSaved }) {
     lesson_date: '', topic: '', duration_mins: 60,
     objectives: '', resources: '',
     introduction: '', development: '', conclusion: '',
-    assessment_method: '', references_used: '', trainee_notes: '',,
+    assessment_method: '', references_used: '', trainee_notes: '',
     ...(isNew ? {} : plan),
   });
   const [saving, setSaving] = useState(false);
