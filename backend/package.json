@@ -1,0 +1,28 @@
+{
+  "name": "shulink-backend",
+  "version": "2.0.0",
+  "description": "Shulink — TVET School Management Platform by MilleHills Ltd",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "migrate": "node src/migrations/run.js",
+    "seed": "node src/migrations/seed.js",
+    "templates": "node src/utils/generateTemplates.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "exceljs": "^4.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.10.1",
+    "nodemailer": "^6.9.14",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
