@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Calendar,
   FileText, Eye, Award, AlertTriangle, Shield, Download,
   LogOut, Bell, Building2, ListTree, ClipboardList, UserSquare,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, TrendingUp,
 } from 'lucide-react';
 
 function NavItem({ to, icon: Icon, label, exact }) {
@@ -90,7 +90,8 @@ export default function Shell() {
           <NavSection label="Curriculum" defaultOpen routes={['/qualifications','/modules','/chronogram','/import']}>
             <NavItem to="/qualifications" icon={Award}    label="Qualifications"/>
             <NavItem to="/modules"        icon={ListTree} label="Modules"/>
-            <NavItem to="/chronogram"     icon={Calendar} label="Chronogram"/>
+            <NavItem to="/chronogram"     icon={Calendar}   label="Chronogram"/>
+            <NavItem to="/module-progress" icon={TrendingUp} label="Module Progress"/>
             {can('school_admin','headmaster','dos') &&
               <NavItem to="/import"       icon={Download} label="Excel Import"/>}
           </NavSection>

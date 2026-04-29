@@ -1062,3 +1062,142 @@ exports.getTrainerPortfolio = async (req, res) => {
     res.json({ trainer, schemes, session_plans, observations, competencies_signed, stats });
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
+
+// ═══════════════════════════════════════════════════════════════
+// MODULE PROGRESS TRACKER
+// ═══════════════════════════════════════════════════════════════
+
+exports.getModuleProgress = async (req, res) => {
+  const { chronogram_id, qualification_id } = req.query;
+  const s = sid(req);
+
+  try {
+    // Get all chronograms for this school
+    let chronoQ = `SELECT ch.*, q.title AS qualification_title, q.curriculum_code
+                   FROM chronograms ch
+                   JOIN qualifications q ON ch.qualification_id=q.id
+                   WHERE ch.school_id=? AND ch.is_active=1`;
+    const chronoParams = [s];
+    if (chronogram_id) { chronoQ += ' AND ch.id=?'; chronoParams.push(chronogram_id); }
+    if (qualification_id) { chronoQ += ' AND ch.qualification_id=?'; chronoParams.push(qualification_id); }
+    chronoQ += ' ORDER BY ch.academic_year DESC';
+
+    const [chronograms] = await pool.query(chronoQ, chronoParams);
+    if (!chronograms.length) return res.json({ progress: [] });
+
+    const progress = [];
+
+    for (const chrono of chronograms) {
+      // Total periods allocated per module in chronogram
+      const [allocated] = await pool.query(
+        `SELECT m.id AS module_id, m.code, m.name, m.module_type, m.learning_periods,
+                COALESCE(SUM(ca.periods), 0) AS allocated_periods
+         FROM modules m
+         LEFT JOIN chronogram_allocations ca ON ca.module_id=m.id
+         LEFT JOIN chronogram_weeks cw ON ca.week_id=cw.id AND cw.chronogram_id=?
+         WHERE m.qualification_id=? AND m.is_active=1
+         GROUP BY m.id
+         ORDER BY m.sequence_order`,
+        [chrono.id, chrono.qualification_id]
+      );
+
+      // Count how many session plans exist per module (taught periods proxy)
+      // Each session plan = 1 teaching session
+      const [taught] = await pool.query(
+        `SELECT sw.module_id,
+                COUNT(sp.id) AS sessions_count,
+                SUM(sp.duration_mins) AS total_mins,
+                MAX(sp.lesson_date) AS last_session_date
+         FROM session_plans sp
+         JOIN schemes_of_work sw ON sp.scheme_id=sw.id
+         WHERE sp.school_id=? AND sw.module_id IS NOT NULL
+         GROUP BY sw.module_id`,
+        [s]
+      );
+
+      const taughtMap = {};
+      taught.forEach(t => { taughtMap[t.module_id] = t; });
+
+      // Weeks that have passed so far (for "on track" calculation)
+      const [passedWeeks] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM chronogram_weeks
+         WHERE chronogram_id=? AND date_end <= CURDATE() AND week_type='teaching'`,
+        [chrono.id]
+      );
+      const [totalWeeks] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM chronogram_weeks
+         WHERE chronogram_id=? AND week_type='teaching'`,
+        [chrono.id]
+      );
+
+      const weeksPassed = passedWeeks[0].cnt;
+      const weeksTotal  = totalWeeks[0].cnt;
+      const termProgress = weeksTotal > 0 ? weeksPassed / weeksTotal : 0;
+
+      const modules = allocated.map(m => {
+        const t = taughtMap[m.module_id] || {};
+        const sessionsCount   = parseInt(t.sessions_count) || 0;
+        const allocatedPeriods = parseInt(m.allocated_periods) || 0;
+
+        // Estimate: each session = 2 periods (1 hour ÷ 30min periods)
+        const taughtPeriods = sessionsCount * 2;
+
+        // Expected periods taught by now based on term progress
+        const expectedPeriods = Math.round(allocatedPeriods * termProgress);
+
+        // Status
+        let status = 'on_track';
+        if (allocatedPeriods === 0) {
+          status = 'no_allocation';
+        } else if (taughtPeriods === 0 && expectedPeriods > 0) {
+          status = 'not_started';
+        } else if (taughtPeriods < expectedPeriods * 0.8) {
+          status = 'behind';
+        } else if (taughtPeriods > allocatedPeriods * 1.1) {
+          status = 'ahead';
+        } else if (taughtPeriods >= allocatedPeriods) {
+          status = 'complete';
+        }
+
+        const pct = allocatedPeriods > 0
+          ? Math.min(100, Math.round((taughtPeriods / allocatedPeriods) * 100))
+          : 0;
+
+        return {
+          module_id:       m.module_id,
+          code:            m.code,
+          name:            m.name,
+          module_type:     m.module_type,
+          allocated_periods: allocatedPeriods,
+          taught_periods:  taughtPeriods,
+          expected_periods: expectedPeriods,
+          sessions_count:  sessionsCount,
+          last_session:    t.last_session_date || null,
+          completion_pct:  pct,
+          status,
+        };
+      });
+
+      progress.push({
+        chronogram_id:      chrono.id,
+        qualification_title: chrono.qualification_title,
+        curriculum_code:    chrono.curriculum_code,
+        academic_year:      chrono.academic_year,
+        weeks_passed:       weeksPassed,
+        weeks_total:        weeksTotal,
+        term_progress_pct:  Math.round(termProgress * 100),
+        modules,
+        summary: {
+          total:       modules.length,
+          on_track:    modules.filter(m => m.status === 'on_track').length,
+          behind:      modules.filter(m => m.status === 'behind').length,
+          not_started: modules.filter(m => m.status === 'not_started').length,
+          complete:    modules.filter(m => m.status === 'complete').length,
+          ahead:       modules.filter(m => m.status === 'ahead').length,
+        },
+      });
+    }
+
+    res.json({ progress });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};

@@ -9,6 +9,7 @@ import LearningOutcomesPage from './pages/curriculum/LearningOutcomesPage';
 import ChronogramPage from './pages/chronogram/ChronogramPage';
 import ImportPage from './pages/ImportPage';
 import SessionPlansPage from './pages/pedagogy/SessionPlansPage';
+import ModuleProgressPage from './pages/curriculum/ModuleProgressPage';
 import ObservationsPage from './pages/pedagogy/ObservationsPage';
 import TrainerPortfolioPage from './pages/pedagogy/TrainerPortfolioPage';
 import DepartmentsPage from './pages/DepartmentsPage';
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="modules"           element={<ModulesPage/>}/>
         <Route path="learning-outcomes" element={<LearningOutcomesPage/>}/>
         <Route path="chronogram"        element={<ChronogramPage/>}/>
+        <Route path="module-progress"    element={<ModuleProgressPage/>}/>
         <Route path="import"            element={<ImportPage/>}/>
 
         {/* Pedagogy */}

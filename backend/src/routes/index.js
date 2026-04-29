@@ -72,6 +72,7 @@ r.get ('/integrated-assessments/:id',  curr_c.getIntegratedAssessment);
 r.post('/integrated-assessments',      roles('school_admin','headmaster','dos','trainer'), curr_c.createIntegratedAssessment);
 
 // ── CHRONOGRAM ────────────────────────────────────────────────
+r.get ('/module-progress',          main_c.getModuleProgress);
 r.get ('/chronograms',             chron_c.list);
 r.get ('/chronograms/:id',         chron_c.get);
 r.post('/chronograms',             roles('school_admin','headmaster','dos'), chron_c.create);
