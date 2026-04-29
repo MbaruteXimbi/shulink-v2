@@ -13,6 +13,56 @@ const isHod        = req => role(req) === 'hod';
 const isSupervisor = req => ['school_admin','headmaster','dos','dod','super_admin'].includes(role(req));
 const canSeeAll    = req => ['school_admin','headmaster','dos','super_admin'].includes(role(req));
 
+// ── NOTIFICATION HELPER ──────────────────────────────────────
+async function createNotification(school_id, user_id, title, message, type = 'info', related_id = null, related_type = null) {
+  try {
+    await pool.query(
+      `INSERT INTO notifications (id,school_id,user_id,title,message,type,related_id,related_type)
+       VALUES (UUID(),?,?,?,?,?,?,?)`,
+      [school_id, user_id, title, message, type, related_id, related_type]
+    );
+  } catch (e) { console.error('Notification error:', e.message); }
+}
+
+// Notify all trainees in a class about an upcoming session
+async function notifyTraineesAboutSession(school_id, scheme_id, plan, trainer_name) {
+  try {
+    // Get class from scheme
+    const [[scheme]] = await pool.query(
+      `SELECT sw.class_id, c.name AS class_name, m.code AS module_code, m.name AS module_name
+       FROM schemes_of_work sw
+       LEFT JOIN classes c ON sw.class_id=c.id
+       LEFT JOIN modules m ON sw.module_id=m.id
+       WHERE sw.id=?`, [scheme_id]
+    );
+    if (!scheme?.class_id) return;
+
+    // Get all students in the class who have a user account
+    const [students] = await pool.query(
+      `SELECT s.user_id FROM students s
+       WHERE s.class_id=? AND s.school_id=? AND s.user_id IS NOT NULL AND s.is_active=1`,
+      [scheme.class_id, school_id]
+    );
+    if (!students.length) return;
+
+    const dateStr = plan.lesson_date
+      ? new Date(plan.lesson_date).toLocaleDateString('en-RW', { weekday:'long', day:'numeric', month:'long' })
+      : `Week ${plan.week_number}`;
+
+    const title = `Upcoming session: ${plan.topic}`;
+    const message = [
+      `${trainer_name} has scheduled a session on "${plan.topic}" for ${dateStr}.`,
+      scheme.module_code ? `Module: ${scheme.module_code} — ${scheme.module_name}.` : '',
+      plan.trainee_notes ? `Preparation: ${plan.trainee_notes}` : '',
+    ].filter(Boolean).join(' ');
+
+    for (const st of students) {
+      await createNotification(school_id, st.user_id, title, message, 'session', plan.id, 'session_plan');
+    }
+  } catch (e) { console.error('Trainee notification error:', e.message); }
+}
+
+
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
@@ -446,7 +496,8 @@ exports.listSessionPlans = async (req, res) => {
 
 exports.createSessionPlan = async (req, res) => {
   const { scheme_id, learning_outcome_id, week_number, lesson_date, topic, duration_mins,
-          objectives, resources, introduction, development, conclusion, assessment_method, references_used } = req.body;
+          objectives, resources, introduction, development, conclusion, assessment_method,
+          references_used, trainee_notes } = req.body;
   if (!scheme_id || !week_number || !topic)
     return res.status(400).json({ error: 'scheme_id, week_number and topic required' });
   try {
@@ -454,26 +505,32 @@ exports.createSessionPlan = async (req, res) => {
     await pool.query(
       `INSERT INTO session_plans (id,school_id,scheme_id,trainer_id,learning_outcome_id,week_number,
         lesson_date,topic,duration_mins,objectives,resources,introduction,development,conclusion,
-        assessment_method,references_used)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        assessment_method,references_used,trainee_notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, sid(req), scheme_id, req.user.id, learning_outcome_id||null, week_number,
        lesson_date||null, topic, duration_mins||60,
        objectives||null, resources||null, introduction||null, development||null,
-       conclusion||null, assessment_method||null, references_used||null]
+       conclusion||null, assessment_method||null, references_used||null, trainee_notes||null]
     );
     const [[lp]] = await pool.query(`SELECT * FROM session_plans WHERE id=?`, [id]);
+
+    // Notify trainees if lesson_date is set or trainee_notes provided
+    if (lesson_date || trainee_notes) {
+      await notifyTraineesAboutSession(sid(req), scheme_id, { ...lp, trainee_notes: trainee_notes||null }, req.user.full_name);
+    }
+
     res.status(201).json(lp);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
 exports.updateSessionPlan = async (req, res) => {
   const fields = ['topic','duration_mins','objectives','resources','introduction','development',
-                  'conclusion','assessment_method','references_used','self_reflection','status','dos_feedback'];
+                  'conclusion','assessment_method','references_used','self_reflection','status',
+                  'dos_feedback','trainee_notes'];
   const updates = []; const vals = [];
   fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=?`); vals.push(req.body[f]); } });
   if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
 
-  // Trainers can only edit their own; DOS feedback only by supervisors
   let whereExtra = '';
   if (isTrainer(req)) whereExtra = ` AND trainer_id='${req.user.id}'`;
 
@@ -481,6 +538,24 @@ exports.updateSessionPlan = async (req, res) => {
   try {
     await pool.query(`UPDATE session_plans SET ${updates.join(',')} WHERE id=? AND school_id=?${whereExtra}`, vals);
     const [[lp]] = await pool.query(`SELECT * FROM session_plans WHERE id=?`, [req.params.id]);
+
+    // When trainer submits the plan, notify trainees
+    if (req.body.status === 'submitted' && lp.scheme_id) {
+      await notifyTraineesAboutSession(sid(req), lp.scheme_id, lp, req.user.full_name);
+    }
+
+    // Notify trainer when DOS approves/rejects their plan
+    if (req.body.dos_feedback || (req.body.status && ['approved','rejected'].includes(req.body.status))) {
+      const action = req.body.status === 'approved' ? 'approved' : req.body.status === 'rejected' ? 'rejected' : 'reviewed';
+      await createNotification(
+        sid(req), lp.trainer_id,
+        `Session plan ${action}`,
+        `Your session plan "${lp.topic}" has been ${action} by ${req.user.full_name}.${req.body.dos_feedback ? ' Feedback: ' + req.body.dos_feedback : ''}`,
+        action === 'approved' ? 'success' : 'warning',
+        lp.id, 'session_plan'
+      );
+    }
+
     res.json(lp);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };

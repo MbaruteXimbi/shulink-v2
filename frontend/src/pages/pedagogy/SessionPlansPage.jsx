@@ -11,7 +11,7 @@ function SessionPlanModal({ plan, schemes, onClose, onSaved }) {
     lesson_date: '', topic: '', duration_mins: 60,
     objectives: '', resources: '',
     introduction: '', development: '', conclusion: '',
-    assessment_method: '', references_used: '',
+    assessment_method: '', references_used: '', trainee_notes: '',,
     ...(isNew ? {} : plan),
   });
   const [saving, setSaving] = useState(false);
@@ -140,6 +140,29 @@ function SessionPlanModal({ plan, schemes, onClose, onSaved }) {
                 <input className="form-input" value={form.references_used || ''} onChange={e => set('references_used', e.target.value)} placeholder="e.g. Chacon, S. (2014). Pro Git. Apress."/>
               </div>
             </div>
+
+            {/* Trainee preparation notes */}
+            <div className="form-group" style={{ marginTop: 4 }}>
+              <label className="form-label">
+                Trainee Preparation Notes
+                <span style={{ fontSize:11, color:'var(--text-3)', fontWeight:400, marginLeft:8 }}>
+                  Trainees will be notified with these instructions when you submit this plan
+                </span>
+              </label>
+              <textarea
+                className="form-textarea"
+                value={form.trainee_notes || ''}
+                onChange={e => set('trainee_notes', e.target.value)}
+                placeholder={"Read Chapter 3 of Pro Git on branching\nWatch: git branch tutorial on YouTube\nBring your laptop fully charged"}
+                style={{ minHeight: 72, borderColor: form.trainee_notes ? 'var(--teal)' : undefined }}
+              />
+              {form.trainee_notes && (
+                <div style={{ fontSize:11, color:'var(--teal)', marginTop:4, display:'flex', alignItems:'center', gap:4 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>
+                  Trainees will be notified when you submit this plan
+                </div>
+              )}
+            </div>
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -243,6 +266,16 @@ function SessionPlanCard({ plan, canEdit, onEdit, onRefresh }) {
             <div>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>References</div>
               <div style={{ fontSize:12, color:'var(--text-2)', fontStyle:'italic' }}>{plan.references_used}</div>
+            </div>
+          )}
+
+          {plan.trainee_notes && (
+            <div style={{ background:'var(--teal-bg)', border:'1px solid #99f6e4', borderRadius:'var(--radius)', padding:'10px 14px' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>
+                Trainee Preparation Notes
+              </div>
+              <div style={{ fontSize:13, lineHeight:1.7, whiteSpace:'pre-line' }}>{plan.trainee_notes}</div>
             </div>
           )}
 

@@ -359,6 +359,7 @@ const schema = [
     self_reflection     TEXT,
     status              ENUM('draft','submitted','reviewed') DEFAULT 'draft',
     dos_feedback        TEXT DEFAULT NULL,
+    trainee_notes       TEXT DEFAULT NULL,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (school_id)           REFERENCES schools(id)           ON DELETE CASCADE,
@@ -625,6 +626,15 @@ async function runMigrations() {
       await conn.query(sql);
     }
     await conn.query('SET FOREIGN_KEY_CHECKS=1');
+
+    // Column additions for existing databases (safe — ignore if already exists)
+    const alterations = [
+      `ALTER TABLE session_plans ADD COLUMN IF NOT EXISTS trainee_notes TEXT DEFAULT NULL`,
+    ];
+    for (const sql of alterations) {
+      try { await conn.query(sql); } catch (e) { /* column already exists */ }
+    }
+
     console.log(`✅ ${schema.length} tables ready.`);
   } catch (e) {
     console.error('❌ Migration error:', e.message);
