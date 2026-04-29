@@ -2,7 +2,16 @@ const pool   = require('../db');
 const { v4: uuid } = require('uuid');
 const bcrypt = require('bcryptjs');
 
-const sid = req => req.user.school_id;
+const sid  = req => req.user.school_id;
+const role = req => req.user.role;
+
+// Role helpers
+const isTrainer    = req => role(req) === 'trainer';
+const isPatron     = req => role(req) === 'patron';
+const isTrainee    = req => role(req) === 'trainee';
+const isHod        = req => role(req) === 'hod';
+const isSupervisor = req => ['school_admin','headmaster','dos','dod','super_admin'].includes(role(req));
+const canSeeAll    = req => ['school_admin','headmaster','dos','super_admin'].includes(role(req));
 
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -11,12 +20,32 @@ const sid = req => req.user.school_id;
 exports.dashboard = async (req, res) => {
   try {
     const s = sid(req);
-    const [[students]]    = await pool.query(`SELECT COUNT(*) c FROM students WHERE school_id=? AND is_active=1`, [s]);
-    const [[trainers]]    = await pool.query(`SELECT COUNT(*) c FROM users WHERE school_id=? AND role='trainer' AND is_active=1`, [s]);
-    const [[incidents]]   = await pool.query(`SELECT COUNT(*) c FROM incidents WHERE school_id=? AND status NOT IN ('closed','resolved')`, [s]);
-    const [[schemes]]     = await pool.query(`SELECT COUNT(*) c FROM schemes_of_work WHERE school_id=? AND status='submitted'`, [s]);
-    const [[chronograms]] = await pool.query(`SELECT COUNT(*) c FROM chronograms WHERE school_id=? AND is_active=1`, [s]);
-    const [[classes]]     = await pool.query(`SELECT COUNT(*) c FROM classes WHERE school_id=? AND is_active=1`, [s]);
+    const uid = req.user.id;
+
+    // Base stats — scoped per role
+    let studentQ = `SELECT COUNT(*) c FROM students WHERE school_id=? AND is_active=1`;
+    let trainerQ = `SELECT COUNT(*) c FROM users WHERE school_id=? AND role='trainer' AND is_active=1`;
+    let incidentQ = `SELECT COUNT(*) c FROM incidents WHERE school_id=? AND status NOT IN ('closed','resolved')`;
+    let schemesQ = `SELECT COUNT(*) c FROM schemes_of_work WHERE school_id=? AND status='submitted'`;
+    let chronoQ = `SELECT COUNT(*) c FROM chronograms WHERE school_id=? AND is_active=1`;
+    let classQ = `SELECT COUNT(*) c FROM classes WHERE school_id=? AND is_active=1`;
+
+    // Trainers only see their own pending schemes
+    if (isTrainer(req)) {
+      schemesQ = `SELECT COUNT(*) c FROM schemes_of_work WHERE school_id=? AND trainer_id='${uid}' AND status='draft'`;
+    }
+
+    const [[students]]    = await pool.query(studentQ, [s]);
+    const [[trainers]]    = await pool.query(trainerQ, [s]);
+    const [[incidents]]   = await pool.query(incidentQ, [s]);
+    const [[schemes]]     = await pool.query(schemesQ, [s]);
+    const [[chronograms]] = await pool.query(chronoQ, [s]);
+    const [[classes]]     = await pool.query(classQ, [s]);
+
+    // Recent incidents — scoped
+    let incidentWhere = `i.school_id='${s}'`;
+    if (isPatron(req)) incidentWhere += ` AND cl.patron_id='${uid}'`;
+
     const [recentIncidents] = await pool.query(
       `SELECT i.*, st.full_name AS student_name, st.reg_number, cl.name AS class_name,
               u.full_name AS reporter_name
@@ -24,20 +53,43 @@ exports.dashboard = async (req, res) => {
        LEFT JOIN students st ON i.student_id=st.id
        LEFT JOIN classes cl ON st.class_id=cl.id
        LEFT JOIN users u ON i.reported_by=u.id
-       WHERE i.school_id=? ORDER BY i.created_at DESC LIMIT 5`, [s]
+       WHERE ${incidentWhere} ORDER BY i.created_at DESC LIMIT 5`
     );
+
+    // Pending schemes — scoped
+    let schemeWhere = `sw.school_id='${s}' AND sw.status='submitted'`;
+    if (isTrainer(req)) schemeWhere = `sw.school_id='${s}' AND sw.trainer_id='${uid}' AND sw.status='draft'`;
+
     const [pendingSchemes] = await pool.query(
-      `SELECT sw.*, u.full_name AS trainer_name, m.code AS module_code, m.name AS module_name, c.name AS class_name
+      `SELECT sw.*, u.full_name AS trainer_name, m.code AS module_code,
+              m.name AS module_name, c.name AS class_name
        FROM schemes_of_work sw
        LEFT JOIN users u ON sw.trainer_id=u.id
        LEFT JOIN modules m ON sw.module_id=m.id
        LEFT JOIN classes c ON sw.class_id=c.id
-       WHERE sw.school_id=? AND sw.status='submitted' LIMIT 5`, [s]
+       WHERE ${schemeWhere} LIMIT 5`
     );
+
     const [incidentsBySeverity] = await pool.query(
       `SELECT severity, COUNT(*) AS count FROM incidents WHERE school_id=?
        AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) GROUP BY severity`, [s]
     );
+
+    // Trainer-specific: today's session plans
+    let todayPlans = [];
+    if (isTrainer(req)) {
+      const [plans] = await pool.query(
+        `SELECT sp.*, m.code AS module_code, m.name AS module_name, c.name AS class_name
+         FROM session_plans sp
+         LEFT JOIN schemes_of_work sw ON sp.scheme_id=sw.id
+         LEFT JOIN modules m ON sw.module_id=m.id
+         LEFT JOIN classes c ON sw.class_id=c.id
+         WHERE sp.school_id=? AND sp.trainer_id=? AND DATE(sp.lesson_date)=CURDATE()`,
+        [s, uid]
+      );
+      todayPlans = plans;
+    }
+
     res.json({
       stats: {
         students: students.c, trainers: trainers.c,
@@ -47,6 +99,7 @@ exports.dashboard = async (req, res) => {
       recent_incidents: recentIncidents,
       pending_schemes: pendingSchemes,
       incidents_by_severity: incidentsBySeverity,
+      today_plans: todayPlans,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -57,13 +110,20 @@ exports.dashboard = async (req, res) => {
 
 exports.listUsers = async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT u.id, u.full_name, u.email, u.role, u.phone, u.is_active,
+    let q = `SELECT u.id, u.full_name, u.email, u.role, u.phone, u.is_active,
               u.last_login, u.created_at, d.name AS department_name
-       FROM users u LEFT JOIN departments d ON u.department_id=d.id
-       WHERE u.school_id=? ORDER BY u.full_name`,
-      [sid(req)]
-    );
+             FROM users u LEFT JOIN departments d ON u.department_id=d.id
+             WHERE u.school_id=?`;
+    const params = [sid(req)];
+
+    // HoD sees only their department
+    if (isHod(req)) {
+      q += ' AND u.department_id=(SELECT department_id FROM users WHERE id=?)';
+      params.push(req.user.id);
+    }
+
+    q += ' ORDER BY u.full_name';
+    const [rows] = await pool.query(q, params);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -120,6 +180,18 @@ exports.listStudents = async (req, res) => {
              LEFT JOIN qualifications q ON s.qualification_id=q.id
              WHERE s.school_id=? AND s.is_active=1`;
     const params = [sid(req)];
+
+    // Patron sees only their class
+    if (isPatron(req)) {
+      q += ` AND c.patron_id=?`;
+      params.push(req.user.id);
+    }
+    // Trainee sees only themselves
+    if (isTrainee(req)) {
+      q += ` AND s.user_id=?`;
+      params.push(req.user.id);
+    }
+
     if (class_id)         { q += ' AND s.class_id=?';         params.push(class_id); }
     if (qualification_id) { q += ' AND s.qualification_id=?'; params.push(qualification_id); }
     if (search)           { q += ' AND s.full_name LIKE ?';    params.push(`%${search}%`); }
@@ -170,18 +242,24 @@ exports.updateStudent = async (req, res) => {
 
 exports.listClasses = async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT c.*, u.full_name AS patron_name, q.short_title AS qualification_name,
+    let q = `SELECT c.*, u.full_name AS patron_name, q.short_title AS qualification_name,
               d.name AS department_name,
               (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id AND s.is_active=1) AS student_count
-       FROM classes c
-       LEFT JOIN users u ON c.patron_id=u.id
-       LEFT JOIN qualifications q ON c.qualification_id=q.id
-       LEFT JOIN departments d ON c.department_id=d.id
-       WHERE c.school_id=? AND c.is_active=1
-       ORDER BY c.name`,
-      [sid(req)]
-    );
+             FROM classes c
+             LEFT JOIN users u ON c.patron_id=u.id
+             LEFT JOIN qualifications q ON c.qualification_id=q.id
+             LEFT JOIN departments d ON c.department_id=d.id
+             WHERE c.school_id=? AND c.is_active=1`;
+    const params = [sid(req)];
+
+    // Patron sees only their class
+    if (isPatron(req)) {
+      q += ' AND c.patron_id=?';
+      params.push(req.user.id);
+    }
+
+    q += ' ORDER BY c.name';
+    const [rows] = await pool.query(q, params);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -241,6 +319,19 @@ exports.createDepartment = async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
+exports.updateDepartment = async (req, res) => {
+  const fields = ['name','code','hod_id','description','is_active'];
+  const updates = []; const vals = [];
+  fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=?`); vals.push(req.body[f]); } });
+  if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
+  vals.push(req.params.id, sid(req));
+  try {
+    await pool.query(`UPDATE departments SET ${updates.join(',')} WHERE id=? AND school_id=?`, vals);
+    const [[d]] = await pool.query(`SELECT * FROM departments WHERE id=?`, [req.params.id]);
+    res.json(d);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
 // ═══════════════════════════════════════════════════════════════
 // PEDAGOGY — SCHEMES OF WORK
 // ═══════════════════════════════════════════════════════════════
@@ -257,8 +348,20 @@ exports.listSchemes = async (req, res) => {
              LEFT JOIN classes c ON sw.class_id=c.id
              WHERE sw.school_id=?`;
     const params = [sid(req)];
+
+    // Trainer sees only their own schemes
+    if (isTrainer(req)) {
+      q += ' AND sw.trainer_id=?';
+      params.push(req.user.id);
+    }
+    // HoD sees only their department's schemes
+    if (isHod(req)) {
+      q += ` AND u.department_id=(SELECT department_id FROM users WHERE id=?)`;
+      params.push(req.user.id);
+    }
+
     if (status)     { q += ' AND sw.status=?';     params.push(status); }
-    if (trainer_id) { q += ' AND sw.trainer_id=?'; params.push(trainer_id); }
+    if (trainer_id && canSeeAll(req)) { q += ' AND sw.trainer_id=?'; params.push(trainer_id); }
     q += ' ORDER BY sw.created_at DESC';
     const [rows] = await pool.query(q, params);
     res.json(rows);
@@ -304,21 +407,37 @@ exports.reviewScheme = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// PEDAGOGY — LESSON PLANS
+// PEDAGOGY — SESSION PLANS
 // ═══════════════════════════════════════════════════════════════
 
 exports.listSessionPlans = async (req, res) => {
   const { scheme_id, trainer_id } = req.query;
   try {
     let q = `SELECT lp.*, lo.title AS lo_title, lo.number AS lo_number,
-              u.full_name AS trainer_name
+              u.full_name AS trainer_name,
+              sw.subject, m.code AS module_code, c.name AS class_name
              FROM session_plans lp
              LEFT JOIN learning_outcomes lo ON lp.learning_outcome_id=lo.id
              LEFT JOIN users u ON lp.trainer_id=u.id
+             LEFT JOIN schemes_of_work sw ON lp.scheme_id=sw.id
+             LEFT JOIN modules m ON sw.module_id=m.id
+             LEFT JOIN classes c ON sw.class_id=c.id
              WHERE lp.school_id=?`;
     const params = [sid(req)];
+
+    // Trainer sees only their own session plans
+    if (isTrainer(req)) {
+      q += ' AND lp.trainer_id=?';
+      params.push(req.user.id);
+    }
+    // HoD sees only their department
+    if (isHod(req)) {
+      q += ` AND u.department_id=(SELECT department_id FROM users WHERE id=?)`;
+      params.push(req.user.id);
+    }
+
     if (scheme_id)  { q += ' AND lp.scheme_id=?';  params.push(scheme_id); }
-    if (trainer_id) { q += ' AND lp.trainer_id=?'; params.push(trainer_id); }
+    if (trainer_id && canSeeAll(req)) { q += ' AND lp.trainer_id=?'; params.push(trainer_id); }
     q += ' ORDER BY lp.week_number, lp.lesson_date';
     const [rows] = await pool.query(q, params);
     res.json(rows);
@@ -349,13 +468,18 @@ exports.createSessionPlan = async (req, res) => {
 
 exports.updateSessionPlan = async (req, res) => {
   const fields = ['topic','duration_mins','objectives','resources','introduction','development',
-                  'conclusion','assessment_method','references_used','self_reflection','status'];
+                  'conclusion','assessment_method','references_used','self_reflection','status','dos_feedback'];
   const updates = []; const vals = [];
   fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=?`); vals.push(req.body[f]); } });
   if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
+
+  // Trainers can only edit their own; DOS feedback only by supervisors
+  let whereExtra = '';
+  if (isTrainer(req)) whereExtra = ` AND trainer_id='${req.user.id}'`;
+
   vals.push(req.params.id, sid(req));
   try {
-    await pool.query(`UPDATE session_plans SET ${updates.join(',')} WHERE id=? AND school_id=?`, vals);
+    await pool.query(`UPDATE session_plans SET ${updates.join(',')} WHERE id=? AND school_id=?${whereExtra}`, vals);
     const [[lp]] = await pool.query(`SELECT * FROM session_plans WHERE id=?`, [req.params.id]);
     res.json(lp);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -377,7 +501,19 @@ exports.listObservations = async (req, res) => {
              LEFT JOIN modules m ON o.module_id=m.id
              WHERE o.school_id=?`;
     const params = [sid(req)];
-    if (trainer_id) { q += ' AND o.trainer_id=?'; params.push(trainer_id); }
+
+    // Trainer sees only observations of themselves
+    if (isTrainer(req)) {
+      q += ' AND o.trainer_id=?';
+      params.push(req.user.id);
+    }
+    // HoD sees only their department
+    if (isHod(req)) {
+      q += ` AND tr.department_id=(SELECT department_id FROM users WHERE id=?)`;
+      params.push(req.user.id);
+    }
+
+    if (trainer_id && canSeeAll(req)) { q += ' AND o.trainer_id=?'; params.push(trainer_id); }
     q += ' ORDER BY o.observation_date DESC';
     const [rows] = await pool.query(q, params);
     res.json(rows);
@@ -389,7 +525,10 @@ exports.createObservation = async (req, res) => {
           preparation, delivery, student_engagement, classroom_mgmt, assessment_used,
           strengths, areas_to_improve, recommendations } = req.body;
   if (!trainer_id || !observation_date) return res.status(400).json({ error: 'trainer_id and observation_date required' });
-  const overall = Math.round(([preparation,delivery,student_engagement,classroom_mgmt,assessment_used].filter(Boolean).reduce((a,b)=>a+parseInt(b),0)) / 5);
+  const overall = Math.round(
+    [preparation,delivery,student_engagement,classroom_mgmt,assessment_used]
+      .filter(Boolean).reduce((a,b)=>a+parseInt(b),0) / 5
+  );
   try {
     const id = uuid();
     await pool.query(
@@ -422,6 +561,18 @@ exports.listIncidents = async (req, res) => {
              LEFT JOIN incident_types it ON i.incident_type_id=it.id
              WHERE i.school_id=?`;
     const params = [sid(req)];
+
+    // Patron sees only incidents in their class
+    if (isPatron(req)) {
+      q += ` AND cl.patron_id=?`;
+      params.push(req.user.id);
+    }
+    // Trainer sees only incidents they reported
+    if (isTrainer(req)) {
+      q += ` AND i.reported_by=?`;
+      params.push(req.user.id);
+    }
+
     if (severity) { q += ' AND i.severity=?'; params.push(severity); }
     if (status)   { q += ' AND i.status=?';   params.push(status); }
     q += ' ORDER BY i.incident_date DESC, i.created_at DESC LIMIT 500';
@@ -518,6 +669,13 @@ exports.listSanctions = async (req, res) => {
              LEFT JOIN users a ON san.approved_by=a.id
              WHERE san.school_id=?`;
     const params = [sid(req)];
+
+    // Patron sees only sanctions for their class
+    if (isPatron(req)) {
+      q += ` AND cl.patron_id=?`;
+      params.push(req.user.id);
+    }
+
     if (status)     { q += ' AND san.status=?';     params.push(status); }
     if (student_id) { q += ' AND san.student_id=?'; params.push(student_id); }
     q += ' ORDER BY san.created_at DESC';
@@ -573,7 +731,10 @@ exports.listPatronReports = async (req, res) => {
              LEFT JOIN users rv ON pr.reviewed_by=rv.id
              WHERE pr.school_id=?`;
     const params = [sid(req)];
-    if (req.user.role === 'patron') { q += ' AND pr.patron_id=?'; params.push(req.user.id); }
+
+    // Patron sees only their own reports
+    if (isPatron(req)) { q += ' AND pr.patron_id=?'; params.push(req.user.id); }
+
     if (status) { q += ' AND pr.status=?'; params.push(status); }
     q += ' ORDER BY pr.created_at DESC';
     const [rows] = await pool.query(q, params);
@@ -619,11 +780,22 @@ exports.reviewPatronReport = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// PORTFOLIO — TRAINEE COMPETENCIES
+// PORTFOLIO
 // ═══════════════════════════════════════════════════════════════
 
 exports.getTraineePortfolio = async (req, res) => {
   const { student_id } = req.params;
+
+  // Trainees can only view their own portfolio
+  if (isTrainee(req)) {
+    const [[self]] = await pool.query(
+      `SELECT id FROM students WHERE user_id=? AND school_id=?`, [req.user.id, sid(req)]
+    );
+    if (!self || self.id !== student_id) {
+      return res.status(403).json({ error: 'You can only view your own portfolio' });
+    }
+  }
+
   try {
     const [[student]] = await pool.query(
       `SELECT s.*, c.name AS class_name, q.title AS qualification_title
@@ -645,7 +817,6 @@ exports.getTraineePortfolio = async (req, res) => {
        ORDER BY m.sequence_order, lo.number`,
       [student_id, sid(req)]
     );
-    // Evidence per competency
     for (const comp of competencies) {
       const [evidence] = await pool.query(
         `SELECT * FROM competency_evidence WHERE competency_id=? ORDER BY created_at DESC`,
@@ -719,18 +890,5 @@ exports.markNotificationsRead = async (req, res) => {
       [sid(req), req.user.id]
     );
     res.json({ message: 'All marked as read' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-};
-
-exports.updateDepartment = async (req, res) => {
-  const fields = ['name','code','hod_id','description','is_active'];
-  const updates = []; const vals = [];
-  fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=?`); vals.push(req.body[f]); } });
-  if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
-  vals.push(req.params.id, req.user.school_id);
-  try {
-    await pool.query(`UPDATE departments SET ${updates.join(',')} WHERE id=? AND school_id=?`, vals);
-    const [[d]] = await pool.query(`SELECT * FROM departments WHERE id=?`, [req.params.id]);
-    res.json(d);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
