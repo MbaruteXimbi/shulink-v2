@@ -84,7 +84,7 @@ export default function QualificationsPage() {
           <div className="page-title">Qualifications</div>
           <div className="page-subtitle">{quals.length} qualification{quals.length!==1?'s':''} offered by this school</div>
         </div>
-        {can('school_admin','headmaster','super_admin') && (
+        {can('school_admin','headmaster','dos','super_admin') && (
           <button className="btn btn-primary" onClick={() => setShowLink(true)}>
             <Plus size={15}/> Link Qualification
           </button>
@@ -105,7 +105,7 @@ export default function QualificationsPage() {
         <div className="empty-state">
           <h4>No qualifications linked yet</h4>
           <p style={{ marginBottom:16 }}>Link your school's RTB qualifications to get started</p>
-          {can('school_admin','headmaster') && (
+          {can('school_admin','headmaster','dos') && (
             <button className="btn btn-primary" onClick={() => setShowLink(true)}>
               <Plus size={14}/> Link First Qualification
             </button>

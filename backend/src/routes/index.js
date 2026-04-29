@@ -45,9 +45,9 @@ r.get('/sectors', curr_c.getSectors);
 
 // ── CURRICULUM — QUALIFICATIONS ───────────────────────────────
 r.get ('/qualifications',                  curr_c.listQualifications);
-r.post('/qualifications',                  roles('super_admin'), curr_c.createQualification);
+r.post('/qualifications',                  roles('super_admin','school_admin','headmaster','dos'), curr_c.createQualification);
 r.get ('/school/qualifications',           curr_c.getSchoolQualifications);
-r.post('/school/qualifications/link',      roles('school_admin','headmaster','super_admin'), curr_c.linkQualification);
+r.post('/school/qualifications/link',      roles('school_admin','headmaster','dos','super_admin'), curr_c.linkQualification);
 
 // ── CURRICULUM — MODULES ──────────────────────────────────────
 r.get ('/modules',      curr_c.getModules);
